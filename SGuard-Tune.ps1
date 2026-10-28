@@ -12,7 +12,7 @@
       5) 自己退出时不影响游戏；Ctrl+C 停止守护即可
 
 .PARAMETER Cpu
-    目标 CPU 编号（0 基）。默认 7 → 即任务管理器里的 CPU 7（第 8 个逻辑核）。
+    目标 CPU 编号（0 基）。默认 3 → 即任务管理器里的 CPU 3（第 4 个逻辑核）。
 
 .PARAMETER Priority
     优先级：Idle(低，默认) / BelowNormal / Normal
@@ -45,14 +45,14 @@
 
 .EXAMPLE
     .\SGuard-Tune.ps1
-    .\SGuard-Tune.ps1 -Cpu 7 -NoLaunch
+    .\SGuard-Tune.ps1 -Cpu 3 -NoLaunch
     .\SGuard-Tune.ps1 -Status
     .\SGuard-Tune.ps1 -StoreCredential      # 第一次运行，保存 QQ+密码
     .\SGuard-Tune.ps1 -AutoLogin             # 启动并自动登录
 #>
 [CmdletBinding()]
 param(
-    [int]$Cpu = 7,
+    [int]$Cpu = 3,
     [ValidateSet('Idle', 'BelowNormal', 'Normal')]
     [string]$Priority = 'Idle',
     [string]$Shortcut,

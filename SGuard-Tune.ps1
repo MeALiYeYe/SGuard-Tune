@@ -1,7 +1,7 @@
 ﻿<#
 .SYNOPSIS
     启动英雄联盟客户端，并把 SGuard64.exe / SGuard64Svc64.exe 的优先级设为「低」、
-    CPU 相关性设为「仅 CPU 7」（可在任务管理器 - 详细信息 中看到效果）。
+    CPU 相关性设为「仅 CPU 3」（可在任务管理器 - 详细信息 中看到效果）。
 
 .DESCRIPTION
     ACE(SGuard) 会以 SYSTEM 身份运行、且会自我重启，因此本脚本：

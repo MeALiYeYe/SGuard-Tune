@@ -1,5 +1,76 @@
 # SGuard-Tune
-Optimize the startup options for Tencent Games' SGuard to resolve the performance degradation caused by SGuard’s intensive hard drive scanning while Tencent games are running.
 
-# 使用教程
-在ps1中设置相关腾讯游戏启动路径、SGuard设置相关性(默认CPU7、设置优先级低)，再把bat的快捷方式发送到桌面，设置为以管理员方式启动，图标切换为相关游戏的图标。
+为腾讯游戏（英雄联盟国服等）的 ACE 反作弊组件 **SGuard** 做启动优化，解决游戏运行时 SGuard 高强度扫描硬盘导致的卡顿/掉帧问题。
+
+---
+
+## 功能特性
+
+- **自动调优 SGuard 进程**：启动客户端后，自动把 `SGuard64.exe` / `SGuardSvc64.exe`（国服实际进程名，脚本同时兼容 `SGuard64Svc64` 等写法）的：
+  - **优先级** 设为「低（Idle）」
+  - **相关性** 设为「仅 CPU 7」（掩码 `0x80`，需本机逻辑处理器 ≥ 8）
+- **常驻守护**：ACE 每次进游戏都会重新拉起进程或重置设置，脚本每 2 秒巡检一次并自动重新应用，关掉黑窗后已生效的设置仍保留。
+- **安全自动登录（可选）**：通过 Windows 凭据管理器（DPAPI 加密，不落明文）保存 QQ 账号与密码，启动时自动填入登录框。
+
+## 环境要求
+
+- Windows 10/11
+- PowerShell 5.1（或更高）
+- 本机逻辑处理器 ≥ 8（CPU 7 才存在；核心更少时请改用 `-Cpu` 指定可用编号）
+- **必须以管理员身份运行**（操作 SYSTEM 级进程需要 `SeDebugPrivilege`）
+
+## 快速开始
+
+1. 编辑 `SGuard-Tune.ps1` 顶部的游戏启动路径（`$GameLnk`），默认指向桌面英雄联盟快捷方式。
+2. 把 `SGuard-Tune.bat` 的快捷方式发送到桌面，右键 → 属性 → **以管理员身份运行**。
+   （图标可切换为对应游戏的图标，纯属美观。）
+3. 双击该快捷方式即可：提权 → 启动客户端 → 调优 SGuard →（默认）自动登录。
+
+## 命令行参数
+
+直接运行 `SGuard-Tune.ps1` 时可附加以下参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `-NoLaunch` | 不启动客户端，仅做调优守护（客户端已开着时用） |
+| `-Once` | 应用一次设置即退出（不做常驻守护） |
+| `-Status` | 仅查看当前 SGuard 进程的优先级与相关性，不做任何修改 |
+| `-Cpu <n>` | 指定相关性绑定的 CPU 编号，默认 `7` |
+| `-Priority <name>` | 指定优先级：`Low`(默认) / `BelowNormal` / `Normal` 等 |
+| `-AutoLogin` | 启动后自动填入 QQ 与密码（bat 已默认带此参数） |
+| `-QQ <号码>` | 覆盖凭据中保存的账号 |
+| `-LoginWaitMs <毫秒>` | 等待登录框出现的超时，默认 20000，机器慢可调大 |
+| `-StoreCredential` | 交互式保存 QQ 账号与密码到 Windows 凭据管理器（密码不回显） |
+| `-DeleteCredential` | 删除已保存的凭据 |
+
+### 示例
+
+```powershell
+.\SGuard-Tune.ps1                     # 启动客户端 + 守护（默认）
+.\SGuard-Tune.ps1 -NoLaunch           # 客户端已开，只守护
+.\SGuard-Tune.ps1 -Status             # 只看状态
+.\SGuard-Tune.ps1 -Once               # 设一次就退出
+.\SGuard-Tune.ps1 -StoreCredential    # 一次性保存账号密码
+.\SGuard-Tune.ps1 -Cpu 7 -Priority BelowNormal
+```
+
+## 自动登录说明
+
+密码**绝不明文落盘**，而是写入 Windows 凭据管理器（目标名 `SGuardTune_LoL`，按本机持久化）。运行时由脚本取出，通过 UI 自动化优先、失败则回退原生模拟键盘（账号 → Tab → 密码 → 回车）填入。
+
+需要注意：
+
+- 登录框通常是网页 / CEF 控件，自动填入可能无法 100% 命中；若焦点不在账号框、或走微信扫码 / 滑块验证，请按日志提示手动输入。
+- 腾讯在新设备 / 改密后常要求滑块验证，这种情况脚本填了也需你手动过验证（属腾讯防自动机制，无法绕过）。
+- 更稳妥的替代是本机客户端 / WeGame 自带的「记住密码 / 自动登录」，无需任何脚本存密码。
+- 凭据按 `LOCAL_MACHINE` 持久化，本机任何管理员账户都可读取；不再需要时可 `cmdkey /delete:SGuardTune_LoL` 清除。
+
+## 日志
+
+运行日志位于 `%LOCALAPPDATA%\SGuardTune\tune.log`，出问题时查看最快。
+
+## 安全与免责声明
+
+- 本脚本只调整进程调度权重（优先级）与 CPU 亲和性，**不结束进程、不禁服务**，属于社区常规做法，不影响 ACE 正常工作。
+- 若提权后仍报错误码 5（拒绝访问），说明该版本 ACE 开启了自我保护，只能像任务管理器那样手动设置（脚本日志会给出提示）。
+- 本工具仅供个人学习与优化使用，请遵守相关游戏用户协议与当地法律法规。

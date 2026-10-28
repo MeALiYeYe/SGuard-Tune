@@ -262,6 +262,31 @@ public static class User32 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
   [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);
+  [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] p, int cb);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct KEYBDINPUT {
+    public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr extra;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct INPUT { public uint type; public KEYBDINPUT ki; }
+
+  // 以 Unicode 方式输入字符串，可输入任意字符（含中文、特殊符号），无需 WinForms
+  public static int SendUnicode(string s) {
+    if (string.IsNullOrEmpty(s)) return 0;
+    INPUT[] inputs = new INPUT[s.Length * 2];
+    for (int i = 0; i < s.Length; i++) {
+      ushort c = (ushort)s[i];
+      inputs[i * 2]     = new INPUT { type = 1, ki = new KEYBDINPUT { wScan = c, dwFlags = 4 } };        // KEYEVENTF_UNICODE
+      inputs[i * 2 + 1] = new INPUT { type = 1, ki = new KEYBDINPUT { wScan = c, dwFlags = 4 | 2 } };    // +KEYEVENTF_KEYUP
+    }
+    return (int)SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+  }
+  public static void SendVk(ushort vk) {
+    keybd_event((byte)vk, 0, 0, UIntPtr.Zero);
+    keybd_event((byte)vk, 0, 2, UIntPtr.Zero);
+  }
 }
 '@
 }
@@ -284,16 +309,6 @@ function Get-LoginCredential {
     if ($null -eq $pass) { return $null }
     if ($QQ) { $user = $QQ }
     return @{ QQ = $user; Password = $pass }
-}
-
-function Format-SendKeys {
-    param([string]$Text)
-    $sb = New-Object System.Text.StringBuilder
-    foreach ($ch in $Text.ToCharArray()) {
-        if ('+^%~()[]{}'.IndexOf($ch) -ge 0) { $sb.Append('{' + $ch + '}') | Out-Null }
-        else { $sb.Append($ch) | Out-Null }
-    }
-    return $sb.ToString()
 }
 
 function Invoke-AutoLogin {
@@ -336,13 +351,13 @@ function Invoke-AutoLogin {
     if (-not $usedUi) {
         Write-Log 'UI 自动化不可用（登录框通常是网页/CEF 控件），回退到模拟键盘输入。' 'WARN'
         try {
-            [System.Windows.Forms.SendKeys]::SendWait((Format-SendKeys $Credential.QQ))
+            [User32]::SendUnicode($Credential.QQ)
             Start-Sleep -Milliseconds 300
-            [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+            [User32]::SendVk(9)   # Tab
             Start-Sleep -Milliseconds 200
-            [System.Windows.Forms.SendKeys]::SendWait((Format-SendKeys $Credential.Password))
+            [User32]::SendUnicode($Credential.Password)
             Start-Sleep -Milliseconds 200
-            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+            [User32]::SendVk(13)  # Enter
             Write-Log '已通过模拟键盘输入账号、密码并回车。' 'OK'
         } catch {
             Write-Log ('自动输入失败：' + $_.Exception.Message + '（请手动输入）') 'ERROR'

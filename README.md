@@ -8,7 +8,7 @@
 
 - **自动调优 SGuard 进程**：启动客户端后，自动把 `SGuard64.exe` / `SGuardSvc64.exe`（国服实际进程名，脚本同时兼容 `SGuard64Svc64` 等写法）的：
   - **优先级** 设为「低（Idle）」
-  - **相关性** 设为「仅 CPU 7」（掩码 `0x80`，需本机逻辑处理器 ≥ 8）
+  - **相关性** 设为「仅 CPU 3」（掩码 `0x80`，需本机逻辑处理器 ≥ 4）
 - **常驻守护**：ACE 每次进游戏都会重新拉起进程或重置设置，脚本每 2 秒巡检一次并自动重新应用，关掉黑窗后已生效的设置仍保留。
 - **安全自动登录（可选）**：通过 Windows 凭据管理器（DPAPI 加密，不落明文）保存 QQ 账号与密码，启动时自动填入登录框。
 
@@ -16,7 +16,7 @@
 
 - Windows 10/11
 - PowerShell 5.1（或更高）
-- 本机逻辑处理器 ≥ 8（CPU 7 才存在；核心更少时请改用 `-Cpu` 指定可用编号）
+- 本机逻辑处理器 ≥ 4（CPU 3 才存在；核心更少时请改用 `-Cpu` 指定可用编号）
 - **必须以管理员身份运行**（操作 SYSTEM 级进程需要 `SeDebugPrivilege`）
 
 ## 快速开始
@@ -35,7 +35,7 @@
 | `-NoLaunch` | 不启动客户端，仅做调优守护（客户端已开着时用） |
 | `-Once` | 应用一次设置即退出（不做常驻守护） |
 | `-Status` | 仅查看当前 SGuard 进程的优先级与相关性，不做任何修改 |
-| `-Cpu <n>` | 指定相关性绑定的 CPU 编号，默认 `7` |
+| `-Cpu <n>` | 指定相关性绑定的 CPU 编号，默认 `3` |
 | `-Priority <name>` | 指定优先级：`Low`(默认) / `BelowNormal` / `Normal` 等 |
 | `-AutoLogin` | 启动后自动填入 QQ 与密码（bat 已默认带此参数） |
 | `-QQ <号码>` | 覆盖凭据中保存的账号 |
@@ -51,7 +51,7 @@
 .\SGuard-Tune.ps1 -Status             # 只看状态
 .\SGuard-Tune.ps1 -Once               # 设一次就退出
 .\SGuard-Tune.ps1 -StoreCredential    # 一次性保存账号密码
-.\SGuard-Tune.ps1 -Cpu 7 -Priority BelowNormal
+.\SGuard-Tune.ps1 -Cpu 3 -Priority BelowNormal
 ```
 
 ## 自动登录说明

@@ -4,13 +4,14 @@
     优先级设为「低」、CPU 相关性设为单核（可在任务管理器 - 详细信息 中看到效果）。
 
 .DESCRIPTION
-    ⚠️ 重要：腾讯 ACE 反作弊会把「直接启动 LeagueClient.exe 本体」或「以调试特权改写其
-    受保护进程的优先级/相关性」判定为篡改安全组件，弹“安全组件运行异常”(13, 131083, 140)
-    并拒绝进游戏（手动用 WeGame 启动则正常——WeGame 是腾讯受信任的启动通道）。
-    因此脚本【默认】：
-      1) 不提权、不走调试特权；
-      2) 通过 WeGame 命令行 (wegame.exe /StartFor=26) 以普通用户身份拉起游戏——与手动
-         用 WeGame 启动完全一致，不会被 ACE 拦截；
+    ⚠️ 重要：腾讯 ACE 反作弊会在以下情况弹“安全组件运行异常”(13, 131083, 140) 并拒绝进游戏：
+      1) 用 explorer/PowerShell 直接拉起 LeagueClient.exe（绕过官方 Riot 客户端启动链，
+         ACE 不信任这个父进程）；
+      2) 以“管理员身份”运行游戏（被 ACE 判定为环境异常）；
+      3) 用调试特权改写其受保护进程的优先级/相关性（-Tune 时）。
+    因此脚本【默认】（不依赖 WeGame）：
+      1) 走官方 Riot Client (RiotClientServices.exe) 启动链——与游戏本体同源、受 ACE 信任；
+      2) 始终以普通用户身份拉起（若本脚本被以管理员启动，会自动降权，避免触发 ACE）；
       3) 客户端启动后自动填入已保存的 QQ 与密码（需 -AutoLogin）。
     只有显式加 -Tune（或 -Once / -Status）时，脚本才会提权并对 ACE 进程做优先级/相关性
     优化；该行为有概率再次触发上述弹窗，请自行权衡（多数情况下建议保持默认、不要 -Tune）。
@@ -110,7 +111,7 @@ function Test-Admin {
 }
 
 # 是否需要对 ACE 进程做操作（改优先级/相关性、或读取状态）。
-# 默认【不】需要管理员：脚本只负责“通过 WeGame 启动客户端 + 自动登录”，与手动用 WeGame 启动行为一致。
+# 默认【不】需要管理员：脚本只负责“通过官方 Riot Client 启动客户端 + 自动登录”，与直接打开官方客户端行为一致。
 # 仅当显式 -Tune / -Once / -Status 时才需要管理员（用于操作 SYSTEM 级 ACE 进程）。
 $NeedsPrivilege = $Tune -or $Once -or $Status
 
@@ -312,8 +313,8 @@ public static class User32 {
 '@
 }
 
-# 以“非管理员”身份启动进程（从已登录的 explorer 令牌降权），用于在不提权的前提下拉起 WeGame，
-# 避免以管理员运行 WeGame 被 ACE / COM 误判。
+# 以“非管理员”身份启动进程（从已登录的 explorer 令牌降权），用于在不提权的前提下拉起游戏客户端，
+# 避免以管理员运行游戏被 ACE / COM 误判为环境异常。
 if (-not ('NonElevated' -as [type])) {
     Add-Type -Language CSharp @'
 using System;
@@ -375,7 +376,7 @@ function Get-LoginCredential {
 
 function Invoke-AutoLogin {
     param($Credential)
-    Write-Log ('等待客户端登录窗口出现（最多 {0} 毫秒，WeGame 拉起游戏需要一些时间）...' -f $LoginWaitMs)
+    Write-Log ('等待客户端登录窗口出现（最多 {0} 毫秒）...' -f $LoginWaitMs)
     $proc = $null
     $deadline = (Get-Date).AddMilliseconds($LoginWaitMs)
     while ((Get-Date) -lt $deadline) {
@@ -520,7 +521,7 @@ function Set-TargetState {
 }
 
 # ---------- 客户端启动 ----------
-# 直接启动 LeagueClient.exe 的兜底路径（新版游戏已要求走 WeGame 通道，直启会被 ACE 拦截，故仅作后备）。
+# 直接启动 LeagueClient.exe 的兜底路径（仅当官方 Riot Client 不可用时使用；直启可能被 ACE 拦截）。
 function Resolve-Shortcut {
     if ($Shortcut -and (Test-Path -LiteralPath $Shortcut)) { return $Shortcut }
     $candidates = @(
@@ -532,47 +533,41 @@ function Resolve-Shortcut {
     return $null
 }
 
-# 查找本机 WeGame 安装路径（优先读注册表，再回退常见目录）
-function Find-WeGame {
+# 查找官方 Riot 客户端（非 WeGame）——优先使用它，ACE 信任该启动链。
+function Find-Client {
+    # 优先：官方 Riot Client（RiotClientServices.exe），与游戏本体同源，ACE 信任其父进程。
     $candidates = @(
-        (Get-ItemProperty -Path 'HKCU:\Software\Tencent\WeGame' -Name 'InstallPath' -ErrorAction SilentlyContinue).InstallPath,
-        'D:\Software\WeGame\wegame.exe',
-        'C:\Program Files (x86)\WeGame\wegame.exe',
-        'D:\Program Files (x86)\WeGame\wegame.exe',
-        (Get-ItemProperty -Path 'HKLM:\Software\WOW6432Node\Tencent\WeGame' -Name 'InstallPath' -ErrorAction SilentlyContinue).InstallPath
+        'D:\Software\英雄联盟(26)\Riot Client\RiotClientServices.exe',
+        'D:\Software\英雄联盟(26)\LeagueClient\LeagueClient.exe'
     )
     foreach ($c in $candidates) {
         if ($c -and (Test-Path -LiteralPath $c)) { return $c }
     }
+    # 兜底：允许用户用 -Shortcut 指定（例如桌面原英雄联盟快捷方式）
+    if ($Shortcut -and (Test-Path -LiteralPath $Shortcut)) { return $Shortcut }
     return $null
 }
 
-# 启动英雄联盟：优先走 WeGame（腾讯受信任通道，/StartFor=26 为 LoL 游戏码），规避 ACE 安全组件异常。
-# 若当前以管理员身份运行（例如给快捷方式勾了“以管理员身份运行”），则降权以普通用户拉起 WeGame。
-function Start-Game {
-    $wg = Find-WeGame
-    if ($wg) {
-        Write-Log ("通过 WeGame 启动（受信任通道，规避 ACE 安全组件异常）：{0} /StartFor=26" -f $wg)
-        if (Test-Admin) {
-            $ok = $false
-            try { $ok = [NonElevated]::Launch($wg, '/StartFor=26') } catch { $ok = $false }
-            if (-not $ok) {
-                Write-Log '降权启动 WeGame 失败，回退到普通方式启动。' 'WARN'
-                Start-Process -FilePath $wg -ArgumentList '/StartFor=26' | Out-Null
-            }
-        } else {
-            Start-Process -FilePath $wg -ArgumentList '/StartFor=26' | Out-Null
-        }
-        return
-    }
-    # 兜底：直接启动 LeagueClient.exe（可能触发 ACE 异常，仅作最后手段）
-    $target = Resolve-Shortcut
-    if ($target) {
-        Write-Log ("未找到 WeGame，回退直接启动（可能触发 ACE 异常）：{0}" -f $target) 'WARN'
-        Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$target`""
-    } else {
-        Write-Log '未找到 WeGame 与英雄联盟启动文件，无法启动。' 'ERROR'
+# 启动英雄联盟：走官方 Riot Client 启动链（非 WeGame），并以普通用户身份拉起，避免被 ACE 判定为环境异常。
+# 若本脚本被以管理员身份运行（例如给快捷方式勾了“以管理员身份运行”），则自动降权拉起。
+function Start-Client {
+    $client = Find-Client
+    if (-not $client) {
+        Write-Log '未找到英雄联盟客户端（RiotClientServices.exe / LeagueClient.exe），请确认游戏安装路径，或用 -Shortcut 指定。' 'ERROR'
         exit 1
+    }
+    $wd = Split-Path -Parent $client
+    Write-Log ("启动客户端（官方 Riot Client，非 WeGame）：{0}" -f $client)
+    if (Test-Admin) {
+        # 以管理员运行游戏会被 ACE 判定为“环境异常”，降权为普通用户拉起
+        $ok = $false
+        try { $ok = [NonElevated]::Launch($client, '') } catch { $ok = $false }
+        if (-not $ok) {
+            Write-Log '降权启动失败，回退到普通方式（若仍报 ACE 安全组件异常，请勿以管理员身份运行本脚本）。' 'WARN'
+            Start-Process -FilePath $client -WorkingDirectory $wd | Out-Null
+        }
+    } else {
+        Start-Process -FilePath $client -WorkingDirectory $wd | Out-Null
     }
 }
 
@@ -602,14 +597,14 @@ if ($Status) {
 }
 
 # ---------- 启动客户端 ----------
-$clientProcNames = @('LeagueClient', 'LeagueClientUx', 'League of Legends', 'startup_runner', 'wegame')
+$clientProcNames = @('LeagueClient', 'LeagueClientUx', 'League of Legends', 'RiotClientServices', 'startup_runner')
 $clientRunning = @(Get-Process -Name $clientProcNames -ErrorAction SilentlyContinue).Count -gt 0
 
 if (-not $NoLaunch -and -not $Once) {
     if ($clientRunning) {
-        Write-Log '检测到客户端 / WeGame 已在运行，跳过启动。'
+        Write-Log '检测到客户端已在运行，跳过启动。'
     } else {
-        Start-Game
+        Start-Client
     }
 }
 

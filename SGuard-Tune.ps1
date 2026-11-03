@@ -11,8 +11,7 @@
       3) 用调试特权改写其受保护进程的优先级/相关性（-Tune 时）。
     因此脚本【默认】（不依赖 WeGame）：
       1) 走官方 Riot Client (RiotClientServices.exe) 启动链——与游戏本体同源、受 ACE 信任；
-      2) 始终以普通用户身份拉起（若本脚本被以管理员启动，会自动降权，避免触发 ACE）；
-      3) 客户端启动后自动填入已保存的 QQ 与密码（需 -AutoLogin）。
+      2) 始终以普通用户身份拉起（若本脚本被以管理员启动，会自动降权，避免触发 ACE）。
     只有显式加 -Tune（或 -Once / -Status）时，脚本才会提权并对 ACE 进程做优先级/相关性
     优化；该行为有概率再次触发上述弹窗，请自行权衡（多数情况下建议保持默认、不要 -Tune）。
 
@@ -36,30 +35,11 @@
     .PARAMETER Status
     只查看当前 SGuard 进程的优先级与相关性，不做任何修改。
 
-.PARAMETER StoreCredential
-    一次性把 QQ 号与密码安全存入 Windows 凭据管理器（屏幕不回显），随后退出。
-    之后无需再在脚本里写任何明文。
-
-.PARAMETER AutoLogin
-    客户端启动后自动填入已保存的 QQ 与密码（UI 自动化优先，失败退回模拟键盘）。
-    双击启动批处理默认带此开关。
-
-.PARAMETER QQ
-    指定要填入的 QQ 号（不指定则用凭据管理器里保存的账号）。仅与 -AutoLogin 配合。
-
-.PARAMETER CredTarget
-    凭据在 Windows 凭据管理器中的目标名，默认 SGuardTune_LoL。
-
-.PARAMETER LoginWaitMs / FillDelayMs
-    登录框出现前的等待时间 / 填表前的对焦延迟（毫秒），机器慢可调大。
-
 .EXAMPLE
-    .\SGuard-Tune.ps1                         # 仅启动客户端 + 自动登录（不碰 ACE，安全）
+    .\SGuard-Tune.ps1                         # 仅启动客户端（走官方 Riot Client，不碰 ACE，安全）
     .\SGuard-Tune.ps1 -Tune                   # 启动并优化 SGuard（可能被 ACE 拦截，慎用）
     .\SGuard-Tune.ps1 -Tune -Cpu 3 -NoLaunch  # 仅对已在运行的 ACE 进程做优化
     .\SGuard-Tune.ps1 -Status                 # 仅查看当前 SGuard 状态，不改任何东西
-    .\SGuard-Tune.ps1 -StoreCredential        # 第一次运行，保存 QQ+密码
-    .\SGuard-Tune.ps1 -AutoLogin              # 启动并自动登录
 #>
 [CmdletBinding()]
 param(
@@ -73,13 +53,7 @@ param(
     [switch]$NoLaunch,
     [switch]$Once,
     [switch]$Tune,
-    [switch]$Status,
-    [string]$QQ,
-    [switch]$StoreCredential,
-    [switch]$AutoLogin,
-    [string]$CredTarget = 'SGuardTune_LoL',
-    [int]$LoginWaitMs = 20000,
-    [int]$FillDelayMs = 800
+    [switch]$Status
 )
 
 $ErrorActionPreference = 'Stop'
@@ -111,7 +85,7 @@ function Test-Admin {
 }
 
 # 是否需要对 ACE 进程做操作（改优先级/相关性、或读取状态）。
-# 默认【不】需要管理员：脚本只负责“通过官方 Riot Client 启动客户端 + 自动登录”，与直接打开官方客户端行为一致。
+# 默认【不】需要管理员：脚本只负责“通过官方 Riot Client 启动客户端”，与直接打开官方客户端行为一致。
 # 仅当显式 -Tune / -Once / -Status 时才需要管理员（用于操作 SYSTEM 级 ACE 进程）。
 $NeedsPrivilege = $Tune -or $Once -or $Status
 
@@ -224,95 +198,6 @@ if ($NeedsPrivilege) {
     [SGuardNative]::EnablePrivilege('SeDebugPrivilege') | Out-Null
 }
 
-# ---------- 凭据安全存储（Windows 凭据管理器，不落明文） ----------
-if (-not ('CredStore' -as [type])) {
-    Add-Type -Language CSharp @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class CredStore {
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-  public struct CREDENTIAL {
-    public uint Flags; public uint Type; public string TargetName; public string Comment;
-    public FILETIME LastWritten; public uint CredentialBlobSize; public IntPtr CredentialBlob;
-    public uint Persist; public uint AttributeCount; public IntPtr Attributes;
-    public string TargetAlias; public string UserName;
-  }
-  [StructLayout(LayoutKind.Sequential)]
-  public struct FILETIME { public uint Low; public uint High; }
-  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  static extern bool CredWrite(ref CREDENTIAL c, uint flags);
-  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  static extern bool CredRead(string target, uint type, uint flags, out IntPtr pc);
-  [DllImport("advapi32.dll")]
-  static extern void CredFree(IntPtr p);
-  const uint CRED_TYPE_GENERIC = 1;
-  const uint CRED_PERSIST_LOCAL_MACHINE = 2;
-  public static bool Write(string target, string user, string pass, uint persist = CRED_PERSIST_LOCAL_MACHINE) {
-    byte[] bytes = Encoding.Unicode.GetBytes(pass);
-    CREDENTIAL c = new CREDENTIAL();
-    c.Type = CRED_TYPE_GENERIC; c.TargetName = target; c.Comment = "LoL auto-login";
-    IntPtr p = Marshal.AllocHGlobal(bytes.Length);
-    Marshal.Copy(bytes, 0, p, bytes.Length);
-    c.CredentialBlob = p; c.CredentialBlobSize = (uint)bytes.Length;
-    c.Persist = persist; c.UserName = user;
-    c.AttributeCount = 0; c.Attributes = IntPtr.Zero;
-    bool ok = CredWrite(ref c, 0);
-    Marshal.FreeHGlobal(p);
-    return ok;
-  }
-  public static string Read(string target, out string user) {
-    IntPtr pc; user = null;
-    if (!CredRead(target, CRED_TYPE_GENERIC, 0, out pc)) return null;
-    try {
-      CREDENTIAL c = (CREDENTIAL)Marshal.PtrToStructure(pc, typeof(CREDENTIAL));
-      byte[] b = new byte[c.CredentialBlobSize];
-      Marshal.Copy(c.CredentialBlob, b, 0, (int)c.CredentialBlobSize);
-      user = c.UserName;
-      return Encoding.Unicode.GetString(b);
-    } finally { CredFree(pc); }
-  }
-}
-'@
-}
-
-if (-not ('User32' -as [type])) {
-    Add-Type -Language CSharp @'
-using System;
-using System.Runtime.InteropServices;
-public static class User32 {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
-  [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);
-  [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] p, int cb);
-  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
-
-  [StructLayout(LayoutKind.Sequential)]
-  public struct KEYBDINPUT {
-    public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr extra;
-  }
-  [StructLayout(LayoutKind.Sequential)]
-  public struct INPUT { public uint type; public KEYBDINPUT ki; }
-
-  // 以 Unicode 方式输入字符串，可输入任意字符（含中文、特殊符号），无需 WinForms
-  public static int SendUnicode(string s) {
-    if (string.IsNullOrEmpty(s)) return 0;
-    INPUT[] inputs = new INPUT[s.Length * 2];
-    for (int i = 0; i < s.Length; i++) {
-      ushort c = (ushort)s[i];
-      inputs[i * 2]     = new INPUT { type = 1, ki = new KEYBDINPUT { wScan = c, dwFlags = 4 } };        // KEYEVENTF_UNICODE
-      inputs[i * 2 + 1] = new INPUT { type = 1, ki = new KEYBDINPUT { wScan = c, dwFlags = 4 | 2 } };    // +KEYEVENTF_KEYUP
-    }
-    return (int)SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
-  }
-  public static void SendVk(ushort vk) {
-    keybd_event((byte)vk, 0, 0, UIntPtr.Zero);
-    keybd_event((byte)vk, 0, 2, UIntPtr.Zero);
-  }
-}
-'@
-}
-
 # 以“非管理员”身份启动进程（从已登录的 explorer 令牌降权），用于在不提权的前提下拉起游戏客户端，
 # 避免以管理员运行游戏被 ACE / COM 误判为环境异常。
 if (-not ('NonElevated' -as [type])) {
@@ -352,85 +237,6 @@ public static class NonElevated {
   }
 }
 '@
-}
-
-function Set-LoginCredential {
-    $qq = Read-Host '请输入 QQ 号'
-    if (-not $qq) { Write-Log 'QQ 号为空，已取消。' 'WARN'; return $false }
-    $sec = Read-Host '请输入密码（输入时屏幕不显示）' -AsSecureString
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
-    $ok = [CredStore]::Write($CredTarget, $qq, $plain)
-    if ($ok) { Write-Log ("已安全保存凭据到 Windows 凭据管理器（目标名 {0}）" -f $CredTarget) 'OK' }
-    else { Write-Log ('凭据保存失败，错误码 ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) 'ERROR' }
-    return $ok
-}
-
-function Get-LoginCredential {
-    $user = $null
-    $pass = [CredStore]::Read($CredTarget, [ref]$user)
-    if ($null -eq $pass) { return $null }
-    if ($QQ) { $user = $QQ }
-    return @{ QQ = $user; Password = $pass }
-}
-
-function Invoke-AutoLogin {
-    param($Credential)
-    Write-Log ('等待客户端登录窗口出现（最多 {0} 毫秒）...' -f $LoginWaitMs)
-    $proc = $null
-    $deadline = (Get-Date).AddMilliseconds($LoginWaitMs)
-    while ((Get-Date) -lt $deadline) {
-        $proc = @(Get-Process -Name 'LeagueClientUx', 'LeagueClient' -ErrorAction SilentlyContinue) |
-            Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        if ($proc) { break }
-        Start-Sleep -Milliseconds 1000
-    }
-    if (-not $proc) {
-        Write-Log '未找到客户端登录窗口，跳过自动填充（可能已登录，或窗口标题不同）。' 'WARN'
-        return
-    }
-    [User32]::AllowSetForegroundWindow($proc.Id) | Out-Null
-    [User32]::ShowWindow($proc.MainWindowHandle, 9) | Out-Null
-    [User32]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
-    Start-Sleep -Milliseconds $FillDelayMs
-
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-    Add-Type -AssemblyName UIAutomationClient -ErrorAction SilentlyContinue
-    Add-Type -AssemblyName UIAutomationTypes -ErrorAction SilentlyContinue
-
-    $usedUi = $false
-    try {
-        $cond = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::Edit)
-        $root = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
-        $edits = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
-        if ($edits.Count -ge 2) {
-            $e0 = $edits[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-            $e0.SetValue($Credential.QQ)
-            Start-Sleep -Milliseconds 250
-            $e1 = $edits[1].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-            $e1.SetValue($Credential.Password)
-            Write-Log '已通过 UI 自动化填入账号与密码。' 'OK'
-            $usedUi = $true
-        }
-    } catch { $usedUi = $false }
-
-    if (-not $usedUi) {
-        Write-Log 'UI 自动化不可用（登录框通常是网页/CEF 控件），回退到模拟键盘输入。' 'WARN'
-        try {
-            [User32]::SendUnicode($Credential.QQ)
-            Start-Sleep -Milliseconds 300
-            [User32]::SendVk(9)   # Tab
-            Start-Sleep -Milliseconds 200
-            [User32]::SendUnicode($Credential.Password)
-            Start-Sleep -Milliseconds 200
-            [User32]::SendVk(13)  # Enter
-            Write-Log '已通过模拟键盘输入账号、密码并回车。' 'OK'
-        } catch {
-            Write-Log ('自动输入失败：' + $_.Exception.Message + '（请手动输入）') 'ERROR'
-        }
-    }
 }
 
 # ---------- 环境校验 ----------
@@ -571,13 +377,6 @@ function Start-Client {
     }
 }
 
-# ---------- 仅保存凭据 ----------
-if ($StoreCredential) {
-    Set-LoginCredential | Out-Null
-    Write-Log '凭据已保存：以后直接双击启动批处理（带 -AutoLogin）即可自动填入。'
-    exit 0
-}
-
 # ---------- 状态模式 ----------
 if ($Status) {
     $procs = Get-TargetProc
@@ -608,16 +407,9 @@ if (-not $NoLaunch -and -not $Once) {
     }
 }
 
-# ---------- 自动登录 ----------
-if ($AutoLogin) {
-    $cred = Get-LoginCredential
-    if ($cred) { Invoke-AutoLogin -Credential $cred }
-    else { Write-Log '未找到已保存的登录凭据，请先运行一次 -StoreCredential 保存 QQ 与密码。' 'WARN' }
-}
-
 # ---------- 是否执行 SGuard 优化（默认关闭，避免触发 ACE 检测） ----------
 if (-not ($Tune -or $Once)) {
-    Write-Log '未启用 -Tune：本脚本仅负责启动客户端与自动登录，不会修改 SGuard 的优先级/相关性。' 'INFO'
+    Write-Log '未启用 -Tune：本脚本仅负责启动客户端，不会修改 SGuard 的优先级/相关性。' 'INFO'
     Write-Log ('（腾讯 ACE 反作弊会把“改写其受保护进程的优先级/相关性”判定为篡改安全组件，' +
                '导致“安全组件运行异常”(13, 131083, 140) 弹窗、游戏无法启动。' +
                '如需旧版优化，可执行 .\SGuard-Tune.ps1 -Tune，但有概率再次触发该弹窗。）') 'WARN'

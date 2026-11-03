@@ -7,7 +7,7 @@ if not exist "%PS1%" (
   pause
   exit /b 1
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -AutoLogin %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
 echo.
 echo --- done, window will stay open ---
 pause

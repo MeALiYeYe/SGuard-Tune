@@ -4,14 +4,16 @@
     优先级设为「低」、CPU 相关性设为单核（可在任务管理器 - 详细信息 中看到效果）。
 
 .DESCRIPTION
-    ⚠️ 重要：腾讯 ACE 反作弊会把「以调试特权改写其受保护进程的优先级/相关性」判定为
-    篡改安全组件，直接弹“安全组件运行异常”(13, 131083, 140) 并拒绝进游戏。
-    因此【默认不执行任何 SGuard 优化】——脚本只负责：
-      1) 自动提权到管理员（仅在 -Tune / -Status / -Once 时才需要，用于操作 SYSTEM 进程）
-      2) 用 explorer 以普通权限启动客户端（避免游戏被跟着提权）
-      3) 客户端启动后自动填入已保存的 QQ 与密码（需 -AutoLogin）
-    只有显式加 -Tune（或 -Once）时，才会启用调试特权并对 ACE 进程做优先级/相关性优化；
-    该行为有概率再次触发上述弹窗，请自行权衡。
+    ⚠️ 重要：腾讯 ACE 反作弊会把「直接启动 LeagueClient.exe 本体」或「以调试特权改写其
+    受保护进程的优先级/相关性」判定为篡改安全组件，弹“安全组件运行异常”(13, 131083, 140)
+    并拒绝进游戏（手动用 WeGame 启动则正常——WeGame 是腾讯受信任的启动通道）。
+    因此脚本【默认】：
+      1) 不提权、不走调试特权；
+      2) 通过 WeGame 命令行 (wegame.exe /StartFor=26) 以普通用户身份拉起游戏——与手动
+         用 WeGame 启动完全一致，不会被 ACE 拦截；
+      3) 客户端启动后自动填入已保存的 QQ 与密码（需 -AutoLogin）。
+    只有显式加 -Tune（或 -Once / -Status）时，脚本才会提权并对 ACE 进程做优先级/相关性
+    优化；该行为有概率再次触发上述弹窗，请自行权衡（多数情况下建议保持默认、不要 -Tune）。
 
 .PARAMETER Cpu
     目标 CPU 编号（0 基）。默认 3 → 即任务管理器里的 CPU 3（第 4 个逻辑核）。
@@ -107,17 +109,24 @@ function Test-Admin {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-if (-not (Test-Admin)) {
-    Write-Host '需要管理员权限，正在请求提权...' -ForegroundColor Yellow
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-    foreach ($k in $PSBoundParameters.Keys) {
-        $v = $PSBoundParameters[$k]
-        if ($v -is [switch]) { if ($v.IsPresent) { $argList += "-$k" } }
-        elseif ($v -is [array]) { $argList += "-$k"; foreach ($i in $v) { $argList += "`"$i`"" } }
-        else { $argList += "-$k"; $argList += "`"$v`"" }
+# 是否需要对 ACE 进程做操作（改优先级/相关性、或读取状态）。
+# 默认【不】需要管理员：脚本只负责“通过 WeGame 启动客户端 + 自动登录”，与手动用 WeGame 启动行为一致。
+# 仅当显式 -Tune / -Once / -Status 时才需要管理员（用于操作 SYSTEM 级 ACE 进程）。
+$NeedsPrivilege = $Tune -or $Once -or $Status
+
+if ($NeedsPrivilege) {
+    if (-not (Test-Admin)) {
+        Write-Host '需要管理员权限（仅 -Tune/-Once/-Status 需要），正在请求提权...' -ForegroundColor Yellow
+        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+        foreach ($k in $PSBoundParameters.Keys) {
+            $v = $PSBoundParameters[$k]
+            if ($v -is [switch]) { if ($v.IsPresent) { $argList += "-$k" } }
+            elseif ($v -is [array]) { $argList += "-$k"; foreach ($i in $v) { $argList += "`"$i`"" } }
+            else { $argList += "-$k"; $argList += "`"$v`"" }
+        }
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs | Out-Null
+        exit
     }
-    Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs | Out-Null
-    exit
 }
 
 # ---------- 原生 API ----------
@@ -209,9 +218,7 @@ public static class SGuardNative
 '@
 }
 
-# 是否需要对 ACE 进程做操作（改优先级/相关性、或读取状态）。
-# 默认【不】启用调试特权、不触碰 ACE 进程，避免被反作弊判定为篡改安全组件。
-$NeedsPrivilege = $Tune -or $Once -or $Status
+# 仅在对 ACE 进程做操作时启用调试特权（默认不启用，避免被反作弊判定为篡改安全组件）。
 if ($NeedsPrivilege) {
     [SGuardNative]::EnablePrivilege('SeDebugPrivilege') | Out-Null
 }
@@ -305,6 +312,47 @@ public static class User32 {
 '@
 }
 
+# 以“非管理员”身份启动进程（从已登录的 explorer 令牌降权），用于在不提权的前提下拉起 WeGame，
+# 避免以管理员运行 WeGame 被 ACE / COM 误判。
+if (-not ('NonElevated' -as [type])) {
+    Add-Type -Language CSharp @'
+using System;
+using System.Runtime.InteropServices;
+public static class NonElevated {
+  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr GetShellWindow();
+  [DllImport("user32.dll", SetLastError=true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint dwAccess, bool bInheritHandle, uint dwProcessId);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
+  [DllImport("advapi32.dll", SetLastError=true)] public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+  [DllImport("advapi32.dll", SetLastError=true)] public static extern bool DuplicateTokenEx(IntPtr hExistingToken, uint dwDesiredAccess, IntPtr lpTokenAttributes, uint ImpersonationLevel, uint TokenType, out IntPtr phNewToken);
+  [DllImport("advapi32.dll", SetLastError=true)] public static extern bool CreateProcessWithTokenW(IntPtr hToken, uint dwLogonFlags, string lpApplicationName, string lpCommandLine, uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+  [StructLayout(LayoutKind.Sequential)] public struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public uint dwProcessId; public uint dwThreadId; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Auto)] public struct STARTUPINFO { public uint cb; public string lpReserved; public string lpDesktop; public string lpTitle; public uint dwX; public uint dwY; public uint dwXSize; public uint dwYSize; public uint dwXCountChars; public uint dwYCountChars; public uint dwFillAttribute; public uint dwFlags; public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
+  public static bool Launch(string app, string args) {
+    IntPtr hwnd = GetShellWindow();
+    if (hwnd == IntPtr.Zero) return false;
+    uint pid; GetWindowThreadProcessId(hwnd, out pid);
+    IntPtr hProc = OpenProcess(0x0400, false, pid);
+    if (hProc == IntPtr.Zero) return false;
+    try {
+      IntPtr hToken;
+      if (!OpenProcessToken(hProc, 0x0008 | 0x0010, out hToken)) return false;
+      try {
+        IntPtr hNew;
+        if (!DuplicateTokenEx(hToken, 0xF01FF, IntPtr.Zero, 2, 1, out hNew)) return false;
+        try {
+          STARTUPINFO si = new STARTUPINFO(); si.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO)); si.wShowWindow = 1;
+          PROCESS_INFORMATION pi;
+          string cmd = "\"" + app + "\" " + args;
+          return CreateProcessWithTokenW(hNew, 0, null, cmd, 0, IntPtr.Zero, null, ref si, out pi);
+        } finally { CloseHandle(hNew); }
+      } finally { CloseHandle(hToken); }
+    } finally { CloseHandle(hProc); }
+  }
+}
+'@
+}
+
 function Set-LoginCredential {
     $qq = Read-Host '请输入 QQ 号'
     if (-not $qq) { Write-Log 'QQ 号为空，已取消。' 'WARN'; return $false }
@@ -327,10 +375,15 @@ function Get-LoginCredential {
 
 function Invoke-AutoLogin {
     param($Credential)
-    Write-Log '等待客户端登录窗口...'
-    Start-Sleep -Milliseconds $LoginWaitMs
-    $proc = @(Get-Process -Name 'LeagueClientUx', 'LeagueClient' -ErrorAction SilentlyContinue) |
-        Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    Write-Log ('等待客户端登录窗口出现（最多 {0} 毫秒，WeGame 拉起游戏需要一些时间）...' -f $LoginWaitMs)
+    $proc = $null
+    $deadline = (Get-Date).AddMilliseconds($LoginWaitMs)
+    while ((Get-Date) -lt $deadline) {
+        $proc = @(Get-Process -Name 'LeagueClientUx', 'LeagueClient' -ErrorAction SilentlyContinue) |
+            Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+        if ($proc) { break }
+        Start-Sleep -Milliseconds 1000
+    }
     if (-not $proc) {
         Write-Log '未找到客户端登录窗口，跳过自动填充（可能已登录，或窗口标题不同）。' 'WARN'
         return
@@ -467,12 +520,9 @@ function Set-TargetState {
 }
 
 # ---------- 客户端启动 ----------
+# 直接启动 LeagueClient.exe 的兜底路径（新版游戏已要求走 WeGame 通道，直启会被 ACE 拦截，故仅作后备）。
 function Resolve-Shortcut {
     if ($Shortcut -and (Test-Path -LiteralPath $Shortcut)) { return $Shortcut }
-    # 优先使用 Riot 客户端本体 LeagueClient.exe：
-    #   startup_runner.exe 是 Tencent 启动器，依赖 Launcher\config\luascript\init.lua，
-    #   该文件在游戏更新后可能丢失，导致一启动就报 "Lua Exception! load script file failed"。
-    #   LeagueClient.exe 不依赖该 Lua 脚本，可直接拉起登录界面（与 WeGame 启动路径一致）。
     $candidates = @(
         'D:\Software\英雄联盟(26)\LeagueClient\LeagueClient.exe',
         'D:\Software\英雄联盟(26)\Launcher\startup_runner.exe',
@@ -480,6 +530,50 @@ function Resolve-Shortcut {
     )
     foreach ($c in $candidates) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
     return $null
+}
+
+# 查找本机 WeGame 安装路径（优先读注册表，再回退常见目录）
+function Find-WeGame {
+    $candidates = @(
+        (Get-ItemProperty -Path 'HKCU:\Software\Tencent\WeGame' -Name 'InstallPath' -ErrorAction SilentlyContinue).InstallPath,
+        'D:\Software\WeGame\wegame.exe',
+        'C:\Program Files (x86)\WeGame\wegame.exe',
+        'D:\Program Files (x86)\WeGame\wegame.exe',
+        (Get-ItemProperty -Path 'HKLM:\Software\WOW6432Node\Tencent\WeGame' -Name 'InstallPath' -ErrorAction SilentlyContinue).InstallPath
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+# 启动英雄联盟：优先走 WeGame（腾讯受信任通道，/StartFor=26 为 LoL 游戏码），规避 ACE 安全组件异常。
+# 若当前以管理员身份运行（例如给快捷方式勾了“以管理员身份运行”），则降权以普通用户拉起 WeGame。
+function Start-Game {
+    $wg = Find-WeGame
+    if ($wg) {
+        Write-Log ("通过 WeGame 启动（受信任通道，规避 ACE 安全组件异常）：{0} /StartFor=26" -f $wg)
+        if (Test-Admin) {
+            $ok = $false
+            try { $ok = [NonElevated]::Launch($wg, '/StartFor=26') } catch { $ok = $false }
+            if (-not $ok) {
+                Write-Log '降权启动 WeGame 失败，回退到普通方式启动。' 'WARN'
+                Start-Process -FilePath $wg -ArgumentList '/StartFor=26' | Out-Null
+            }
+        } else {
+            Start-Process -FilePath $wg -ArgumentList '/StartFor=26' | Out-Null
+        }
+        return
+    }
+    # 兜底：直接启动 LeagueClient.exe（可能触发 ACE 异常，仅作最后手段）
+    $target = Resolve-Shortcut
+    if ($target) {
+        Write-Log ("未找到 WeGame，回退直接启动（可能触发 ACE 异常）：{0}" -f $target) 'WARN'
+        Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$target`""
+    } else {
+        Write-Log '未找到 WeGame 与英雄联盟启动文件，无法启动。' 'ERROR'
+        exit 1
+    }
 }
 
 # ---------- 仅保存凭据 ----------
@@ -508,23 +602,14 @@ if ($Status) {
 }
 
 # ---------- 启动客户端 ----------
-Write-Log ("目标：优先级 = {0}，相关性 = 仅 CPU {1}（掩码 0x{2:X}）" -f $prioText, $Cpu, $mask)
-
 $clientProcNames = @('LeagueClient', 'LeagueClientUx', 'League of Legends', 'startup_runner', 'wegame')
 $clientRunning = @(Get-Process -Name $clientProcNames -ErrorAction SilentlyContinue).Count -gt 0
 
 if (-not $NoLaunch -and -not $Once) {
     if ($clientRunning) {
-        Write-Log '检测到客户端已在运行，跳过启动。'
+        Write-Log '检测到客户端 / WeGame 已在运行，跳过启动。'
     } else {
-        $target = Resolve-Shortcut
-        if (-not $target) {
-            Write-Log '未找到英雄联盟快捷方式，请用 -Shortcut 指定路径。' 'ERROR'
-            exit 1
-        }
-        Write-Log ("启动客户端：{0}" -f $target)
-        # 用 explorer 启动，继承普通用户权限，避免游戏被一起提权
-        Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$target`""
+        Start-Game
     }
 }
 

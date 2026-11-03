@@ -455,9 +455,14 @@ function Set-TargetState {
 # ---------- 客户端启动 ----------
 function Resolve-Shortcut {
     if ($Shortcut -and (Test-Path -LiteralPath $Shortcut)) { return $Shortcut }
+    # 优先使用 Riot 客户端本体 LeagueClient.exe：
+    #   startup_runner.exe 是 Tencent 启动器，依赖 Launcher\config\luascript\init.lua，
+    #   该文件在游戏更新后可能丢失，导致一启动就报 "Lua Exception! load script file failed"。
+    #   LeagueClient.exe 不依赖该 Lua 脚本，可直接拉起登录界面（与 WeGame 启动路径一致）。
     $candidates = @(
+        'D:\Software\英雄联盟(26)\LeagueClient\LeagueClient.exe',
         'D:\Software\英雄联盟(26)\Launcher\startup_runner.exe',
-        'D:\Software\英雄联盟(26)\LeagueClient\LeagueClient.exe'
+        'D:\Software\英雄联盟(26)\Launcher\Client.exe'
     )
     foreach ($c in $candidates) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
     return $null

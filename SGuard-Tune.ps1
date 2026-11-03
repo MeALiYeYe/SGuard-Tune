@@ -1,24 +1,31 @@
 ﻿<#
 .SYNOPSIS
-    启动英雄联盟客户端，并把 SGuard64.exe / SGuard64Svc64.exe 的优先级设为「低」、
-    CPU 相关性设为「仅 CPU 3」（可在任务管理器 - 详细信息 中看到效果）。
+    启动英雄联盟客户端，并在需要时（加 -Tune）把 SGuard64.exe / SGuardSvc64.exe 的
+    优先级设为「低」、CPU 相关性设为单核（可在任务管理器 - 详细信息 中看到效果）。
 
 .DESCRIPTION
-    ACE(SGuard) 会以 SYSTEM 身份运行、且会自我重启，因此本脚本：
-      1) 自动提权到管理员（否则无法操作 SYSTEM 进程）
+    ⚠️ 重要：腾讯 ACE 反作弊会把「以调试特权改写其受保护进程的优先级/相关性」判定为
+    篡改安全组件，直接弹“安全组件运行异常”(13, 131083, 140) 并拒绝进游戏。
+    因此【默认不执行任何 SGuard 优化】——脚本只负责：
+      1) 自动提权到管理员（仅在 -Tune / -Status / -Once 时才需要，用于操作 SYSTEM 进程）
       2) 用 explorer 以普通权限启动客户端（避免游戏被跟着提权）
-      3) 轮询等待 SGuard 进程出现，逐个设置 Idle 优先级 + 单核亲和性
-      4) 持续守护：进程重启 / 设置被重置时自动重新应用
-      5) 自己退出时不影响游戏；Ctrl+C 停止守护即可
+      3) 客户端启动后自动填入已保存的 QQ 与密码（需 -AutoLogin）
+    只有显式加 -Tune（或 -Once）时，才会启用调试特权并对 ACE 进程做优先级/相关性优化；
+    该行为有概率再次触发上述弹窗，请自行权衡。
 
 .PARAMETER Cpu
     目标 CPU 编号（0 基）。默认 3 → 即任务管理器里的 CPU 3（第 4 个逻辑核）。
+    仅在使用 -Tune 时生效。
 
 .PARAMETER Priority
-    优先级：Idle(低，默认) / BelowNormal / Normal
+    优先级：Idle(低，默认) / BelowNormal / Normal。仅在使用 -Tune 时生效。
+
+.PARAMETER Tune
+    启用 SGuard 优先级/相关性优化（含 ACE 进程守护）。默认关闭。
+    注意：开启后可能被 ACE 判定为篡改安全组件而弹“安全组件运行异常”，导致无法进游戏。
 
 .PARAMETER NoLaunch
-    不启动客户端，只对已在运行的进程生效。
+    不启动客户端，只对已在运行的进程生效（需配合 -Tune）。
 
 .PARAMETER Once
     只应用一次并退出（不常驻守护）。
@@ -44,11 +51,12 @@
     登录框出现前的等待时间 / 填表前的对焦延迟（毫秒），机器慢可调大。
 
 .EXAMPLE
-    .\SGuard-Tune.ps1
-    .\SGuard-Tune.ps1 -Cpu 3 -NoLaunch
-    .\SGuard-Tune.ps1 -Status
-    .\SGuard-Tune.ps1 -StoreCredential      # 第一次运行，保存 QQ+密码
-    .\SGuard-Tune.ps1 -AutoLogin             # 启动并自动登录
+    .\SGuard-Tune.ps1                         # 仅启动客户端 + 自动登录（不碰 ACE，安全）
+    .\SGuard-Tune.ps1 -Tune                   # 启动并优化 SGuard（可能被 ACE 拦截，慎用）
+    .\SGuard-Tune.ps1 -Tune -Cpu 3 -NoLaunch  # 仅对已在运行的 ACE 进程做优化
+    .\SGuard-Tune.ps1 -Status                 # 仅查看当前 SGuard 状态，不改任何东西
+    .\SGuard-Tune.ps1 -StoreCredential        # 第一次运行，保存 QQ+密码
+    .\SGuard-Tune.ps1 -AutoLogin              # 启动并自动登录
 #>
 [CmdletBinding()]
 param(
@@ -61,6 +69,7 @@ param(
     [int]$WaitSeconds = 300,
     [switch]$NoLaunch,
     [switch]$Once,
+    [switch]$Tune,
     [switch]$Status,
     [string]$QQ,
     [switch]$StoreCredential,
@@ -200,7 +209,12 @@ public static class SGuardNative
 '@
 }
 
-[SGuardNative]::EnablePrivilege('SeDebugPrivilege') | Out-Null
+# 是否需要对 ACE 进程做操作（改优先级/相关性、或读取状态）。
+# 默认【不】启用调试特权、不触碰 ACE 进程，避免被反作弊判定为篡改安全组件。
+$NeedsPrivilege = $Tune -or $Once -or $Status
+if ($NeedsPrivilege) {
+    [SGuardNative]::EnablePrivilege('SeDebugPrivilege') | Out-Null
+}
 
 # ---------- 凭据安全存储（Windows 凭据管理器，不落明文） ----------
 if (-not ('CredStore' -as [type])) {
@@ -519,6 +533,16 @@ if ($AutoLogin) {
     $cred = Get-LoginCredential
     if ($cred) { Invoke-AutoLogin -Credential $cred }
     else { Write-Log '未找到已保存的登录凭据，请先运行一次 -StoreCredential 保存 QQ 与密码。' 'WARN' }
+}
+
+# ---------- 是否执行 SGuard 优化（默认关闭，避免触发 ACE 检测） ----------
+if (-not ($Tune -or $Once)) {
+    Write-Log '未启用 -Tune：本脚本仅负责启动客户端与自动登录，不会修改 SGuard 的优先级/相关性。' 'INFO'
+    Write-Log ('（腾讯 ACE 反作弊会把“改写其受保护进程的优先级/相关性”判定为篡改安全组件，' +
+               '导致“安全组件运行异常”(13, 131083, 140) 弹窗、游戏无法启动。' +
+               '如需旧版优化，可执行 .\SGuard-Tune.ps1 -Tune，但有概率再次触发该弹窗。）') 'WARN'
+    Write-Log '客户端已启动，可关闭本窗口。'
+    exit 0
 }
 
 # ---------- 等待 SGuard 出现 ----------

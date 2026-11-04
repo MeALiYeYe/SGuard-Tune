@@ -1,44 +1,45 @@
 ﻿<#
 .SYNOPSIS
-    启动英雄联盟客户端，并在需要时（加 -Tune）把 SGuard64.exe / SGuardSvc64.exe 的
-    优先级设为「低」、CPU 相关性设为单核（可在任务管理器 - 详细信息 中看到效果）。
+    启动英雄联盟客户端（腾讯官方启动器 startup_runner.exe），并【默认】把
+    SGuard64.exe / SGuardSvc64.exe 的优先级设为「低」、CPU 相关性设为「仅 CPU 3」
+    （可在任务管理器 - 详细信息 中看到效果）。
 
 .DESCRIPTION
     ⚠️ 重要：腾讯 ACE 反作弊会在以下情况弹“安全组件运行异常”(13, 131083, 140) 并拒绝进游戏：
-      1) 用 explorer/PowerShell 直接拉起 LeagueClient.exe（绕过官方 Riot 客户端启动链，
-         ACE 不信任这个父进程）；
+      1) 用 explorer/PowerShell 直接拉起 LeagueClient.exe（绕过官方启动链，ACE 不信任该父进程）；
       2) 以“管理员身份”运行游戏（被 ACE 判定为环境异常）；
-      3) 用调试特权改写其受保护进程的优先级/相关性（-Tune 时）。
-    因此脚本【默认】（不依赖 WeGame）：
-      1) 走腾讯官方启动器（Launcher\startup_runner.exe）启动链——它会拉起 Riot 客户端与游戏本体，ACE 信任该启动链；
-      2) 始终以普通用户身份拉起（若本脚本被以管理员启动，会自动降权，避免触发 ACE）。
-    只有显式加 -Tune（或 -Once / -Status）时，脚本才会提权并对 ACE 进程做优先级/相关性
-    优化；该行为有概率再次触发上述弹窗，请自行权衡（多数情况下建议保持默认、不要 -Tune）。
+      3) 改写其受保护进程的优先级/相关性（即本脚本的优化动作，少数情况下会被拦）。
+    因此脚本的行为是：
+      1) 走腾讯官方启动器（Launcher\startup_runner.exe）启动链——它会拉起 Riot 客户端
+         与游戏本体，ACE 信任该启动链；
+      2) 启动游戏时【始终以普通用户身份】拉起：即使脚本自身是管理员（为了改 ACE 进程必须提权），
+         也会自动降权后再启动客户端，避免踩到第 2 条；
+      3) 脚本自身需要管理员权限（改写 SYSTEM 级 ACE 进程需要），双击后会弹一次 UAC。
+    【默认】即执行 SGuard 优化；若只想启动客户端、不动 ACE，请加 -NoTune。
 
 .PARAMETER Cpu
-    目标 CPU 编号（0 基）。默认 3 → 即任务管理器里的 CPU 3（第 4 个逻辑核）。
-    仅在使用 -Tune 时生效。
+    目标 CPU 编号（0 基）。默认 3 → 即任务管理器里的 CPU 3。
 
 .PARAMETER Priority
-    优先级：Idle(低，默认) / BelowNormal / Normal。仅在使用 -Tune 时生效。
+    优先级：Idle(低，默认) / BelowNormal / Normal。
 
-.PARAMETER Tune
-    启用 SGuard 优先级/相关性优化（含 ACE 进程守护）。默认关闭。
-    注意：开启后可能被 ACE 判定为篡改安全组件而弹“安全组件运行异常”，导致无法进游戏。
+.PARAMETER NoTune
+    跳过 SGuard 优化，只启动客户端（不改优先级/相关性，不需要管理员权限）。
 
 .PARAMETER NoLaunch
-    不启动客户端，只对已在运行的进程生效（需配合 -Tune）。
+    不启动客户端，只对已在运行的 SGuard 进程生效（需与默认优化行为配合使用）。
 
 .PARAMETER Once
     只应用一次并退出（不常驻守护）。
 
-    .PARAMETER Status
+.PARAMETER Status
     只查看当前 SGuard 进程的优先级与相关性，不做任何修改。
 
 .EXAMPLE
-    .\SGuard-Tune.ps1                         # 仅启动客户端（走腾讯官方启动器 startup_runner.exe，不碰 ACE，安全）
-    .\SGuard-Tune.ps1 -Tune                   # 启动并优化 SGuard（可能被 ACE 拦截，慎用）
-    .\SGuard-Tune.ps1 -Tune -Cpu 3 -NoLaunch  # 仅对已在运行的 ACE 进程做优化
+    .\SGuard-Tune.ps1                         # 默认：启动客户端 + 优化 SGuard（低优先级、仅 CPU 3）
+    .\SGuard-Tune.ps1 -Cpu 5                  # 换一个核（仅 CPU 5），其余不变
+    .\SGuard-Tune.ps1 -NoTune                 # 只启动客户端，不碰 ACE（不提权）
+    .\SGuard-Tune.ps1 -NoLaunch               # 不启动，仅对已在运行的 SGuard 做优化
     .\SGuard-Tune.ps1 -Status                 # 仅查看当前 SGuard 状态，不改任何东西
 #>
 [CmdletBinding()]
@@ -52,7 +53,7 @@ param(
     [int]$WaitSeconds = 300,
     [switch]$NoLaunch,
     [switch]$Once,
-    [switch]$Tune,
+    [switch]$NoTune,
     [switch]$Status
 )
 
@@ -84,14 +85,13 @@ function Test-Admin {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-# 是否需要对 ACE 进程做操作（改优先级/相关性、或读取状态）。
-# 默认【不】需要管理员：脚本只负责“通过腾讯官方启动器 startup_runner.exe 启动客户端”，与直接打开官方客户端行为一致。
-# 仅当显式 -Tune / -Once / -Status 时才需要管理员（用于操作 SYSTEM 级 ACE 进程）。
-$NeedsPrivilege = $Tune -or $Once -or $Status
+# 是否需要管理员/调试特权：默认就要优化 SGuard（改写 SYSTEM 级 ACE 进程），因此默认提权。
+# 只有 -NoTune（仅启动客户端）时才是普通权限；-Status 也需要管理员才能读取 ACE 进程。
+$NeedsPrivilege = (-not $NoTune) -or $Status
 
 if ($NeedsPrivilege) {
     if (-not (Test-Admin)) {
-        Write-Host '需要管理员权限（仅 -Tune/-Once/-Status 需要），正在请求提权...' -ForegroundColor Yellow
+        Write-Host '需要管理员权限（改写 SGuard 进程的优先级/相关性需要），正在请求提权...' -ForegroundColor Yellow
         $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
         foreach ($k in $PSBoundParameters.Keys) {
             $v = $PSBoundParameters[$k]
@@ -193,7 +193,7 @@ public static class SGuardNative
 '@
 }
 
-# 仅在对 ACE 进程做操作时启用调试特权（默认不启用，避免被反作弊判定为篡改安全组件）。
+# 默认就要操作 ACE 进程，故默认启用调试特权；只有 -NoTune（仅启动客户端）时不启用。
 if ($NeedsPrivilege) {
     [SGuardNative]::EnablePrivilege('SeDebugPrivilege') | Out-Null
 }
@@ -327,7 +327,7 @@ function Set-TargetState {
 }
 
 # ---------- 客户端启动 ----------
-# 直接启动 LeagueClient.exe 的兜底路径（仅当官方 Riot Client 不可用时使用；直启可能被 ACE 拦截）。
+# 直接启动 LeagueClient.exe 的兜底路径（默认走 startup_runner.exe；直启仅作最后兜底，可能被 ACE 拦截）。
 function Resolve-Shortcut {
     if ($Shortcut -and (Test-Path -LiteralPath $Shortcut)) { return $Shortcut }
     $candidates = @(
@@ -400,7 +400,7 @@ if ($Status) {
 $clientProcNames = @('LeagueClient', 'LeagueClientUx', 'League of Legends', 'RiotClientServices', 'startup_runner')
 $clientRunning = @(Get-Process -Name $clientProcNames -ErrorAction SilentlyContinue).Count -gt 0
 
-if (-not $NoLaunch -and -not $Once) {
+if (-not $NoLaunch) {
     if ($clientRunning) {
         Write-Log '检测到客户端已在运行，跳过启动。'
     } else {
@@ -408,12 +408,9 @@ if (-not $NoLaunch -and -not $Once) {
     }
 }
 
-# ---------- 是否执行 SGuard 优化（默认关闭，避免触发 ACE 检测） ----------
-if (-not ($Tune -or $Once)) {
-    Write-Log '未启用 -Tune：本脚本仅负责启动客户端，不会修改 SGuard 的优先级/相关性。' 'INFO'
-    Write-Log ('（腾讯 ACE 反作弊会把“改写其受保护进程的优先级/相关性”判定为篡改安全组件，' +
-               '导致“安全组件运行异常”(13, 131083, 140) 弹窗、游戏无法启动。' +
-               '如需旧版优化，可执行 .\SGuard-Tune.ps1 -Tune，但有概率再次触发该弹窗。）') 'WARN'
+# ---------- 是否执行 SGuard 优化（默认开启；加 -NoTune 则只启动客户端） ----------
+if ($NoTune) {
+    Write-Log '已指定 -NoTune：本脚本仅负责启动客户端，不会修改 SGuard 的优先级/相关性。' 'INFO'
     Write-Log '客户端已启动，可关闭本窗口。'
     exit 0
 }

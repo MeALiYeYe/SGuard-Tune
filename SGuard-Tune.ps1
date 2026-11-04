@@ -10,7 +10,7 @@
       2) 以“管理员身份”运行游戏（被 ACE 判定为环境异常）；
       3) 用调试特权改写其受保护进程的优先级/相关性（-Tune 时）。
     因此脚本【默认】（不依赖 WeGame）：
-      1) 走官方 Riot Client (RiotClientServices.exe) 启动链——与游戏本体同源、受 ACE 信任；
+      1) 走腾讯官方启动器（Launcher\startup_runner.exe）启动链——它会拉起 Riot 客户端与游戏本体，ACE 信任该启动链；
       2) 始终以普通用户身份拉起（若本脚本被以管理员启动，会自动降权，避免触发 ACE）。
     只有显式加 -Tune（或 -Once / -Status）时，脚本才会提权并对 ACE 进程做优先级/相关性
     优化；该行为有概率再次触发上述弹窗，请自行权衡（多数情况下建议保持默认、不要 -Tune）。
@@ -36,7 +36,7 @@
     只查看当前 SGuard 进程的优先级与相关性，不做任何修改。
 
 .EXAMPLE
-    .\SGuard-Tune.ps1                         # 仅启动客户端（走官方 Riot Client，不碰 ACE，安全）
+    .\SGuard-Tune.ps1                         # 仅启动客户端（走腾讯官方启动器 startup_runner.exe，不碰 ACE，安全）
     .\SGuard-Tune.ps1 -Tune                   # 启动并优化 SGuard（可能被 ACE 拦截，慎用）
     .\SGuard-Tune.ps1 -Tune -Cpu 3 -NoLaunch  # 仅对已在运行的 ACE 进程做优化
     .\SGuard-Tune.ps1 -Status                 # 仅查看当前 SGuard 状态，不改任何东西
@@ -85,7 +85,7 @@ function Test-Admin {
 }
 
 # 是否需要对 ACE 进程做操作（改优先级/相关性、或读取状态）。
-# 默认【不】需要管理员：脚本只负责“通过官方 Riot Client 启动客户端”，与直接打开官方客户端行为一致。
+# 默认【不】需要管理员：脚本只负责“通过腾讯官方启动器 startup_runner.exe 启动客户端”，与直接打开官方客户端行为一致。
 # 仅当显式 -Tune / -Once / -Status 时才需要管理员（用于操作 SYSTEM 级 ACE 进程）。
 $NeedsPrivilege = $Tune -or $Once -or $Status
 
@@ -339,10 +339,11 @@ function Resolve-Shortcut {
     return $null
 }
 
-# 查找官方 Riot 客户端（非 WeGame）——优先使用它，ACE 信任该启动链。
+# 查找英雄联盟客户端（非 WeGame）——默认优先腾讯官方启动器 startup_runner.exe，
+# 它负责拉起 Riot 客户端与游戏本体，ACE 信任该启动链（与桌面“英雄联盟”快捷方式一致）。
 function Find-Client {
-    # 优先：官方 Riot Client（RiotClientServices.exe），与游戏本体同源，ACE 信任其父进程。
     $candidates = @(
+        'D:\Software\英雄联盟(26)\Launcher\startup_runner.exe',
         'D:\Software\英雄联盟(26)\Riot Client\RiotClientServices.exe',
         'D:\Software\英雄联盟(26)\LeagueClient\LeagueClient.exe'
     )
@@ -354,16 +355,16 @@ function Find-Client {
     return $null
 }
 
-# 启动英雄联盟：走官方 Riot Client 启动链（非 WeGame），并以普通用户身份拉起，避免被 ACE 判定为环境异常。
+# 启动英雄联盟：走腾讯官方启动器 startup_runner.exe 启动链（非 WeGame），并以普通用户身份拉起，避免被 ACE 判定为环境异常。
 # 若本脚本被以管理员身份运行（例如给快捷方式勾了“以管理员身份运行”），则自动降权拉起。
 function Start-Client {
     $client = Find-Client
     if (-not $client) {
-        Write-Log '未找到英雄联盟客户端（RiotClientServices.exe / LeagueClient.exe），请确认游戏安装路径，或用 -Shortcut 指定。' 'ERROR'
+        Write-Log '未找到英雄联盟客户端（startup_runner.exe / RiotClientServices.exe / LeagueClient.exe），请确认游戏安装路径，或用 -Shortcut 指定。' 'ERROR'
         exit 1
     }
     $wd = Split-Path -Parent $client
-    Write-Log ("启动客户端（官方 Riot Client，非 WeGame）：{0}" -f $client)
+    Write-Log ("启动客户端（腾讯官方启动器，非 WeGame）：{0}" -f $client)
     if (Test-Admin) {
         # 以管理员运行游戏会被 ACE 判定为“环境异常”，降权为普通用户拉起
         $ok = $false
